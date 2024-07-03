@@ -14,7 +14,7 @@ on:
           Test options. See https://nexte.st/docs/running/#options-and-arguments
         required: false
         type: string
-      
+
       ################################################################################
       #
       # setup-rust related inputs
@@ -35,7 +35,7 @@ on:
         default: false
         required: false
         type: boolean
-      
+
       cargo-registry-github-app-id-secret-name:
         description: Name of the secret containing the Github App id used for cargo registry authentication.
         default: CARGO_REGISTRY_GITHUB_APP_ID
@@ -47,7 +47,7 @@ on:
         default: CARGO_REGISTRY_GITHUB_APP_PRIVATE_KEY
         required: false
         type: string
-      
+
       cargo-registry-github-app-owner:
         description: Github App owner used for cargo registry authentication.
         default: ${{ github.repository_owner }}
@@ -81,7 +81,7 @@ jobs:
           cargo-registry-github-app-id: ${{ secrets[inputs.cargo-registry-github-app-id-secret-name] }}
           cargo-registry-github-app-private-key: ${{ secrets[inputs.cargo-registry-github-app-private-key-secret-name] }}
           cargo-registry-github-app-owner: ${{ inputs.cargo-registry-use-custom-github-auth }}
-      
+
       - name: Build
         uses: a-homelab/github-actions/actions/rust-build@main
         with:
