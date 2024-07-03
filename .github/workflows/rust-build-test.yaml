@@ -1,0 +1,43 @@
+name: Rust Build and Test
+
+on:
+  workflow_call:
+    inputs:
+      build-options:
+        description: |
+          Build options. See https://doc.rust-lang.org/cargo/commands/cargo-build.html#options
+        required: false
+        type: string
+
+      test-options:
+        description: |
+          Test options. See https://nexte.st/docs/running/#options-and-arguments
+        required: false
+        type: string
+
+    secrets:
+      CODECOV_TOKEN:
+        required: false
+
+jobs:
+  build-test:
+    name: Build and test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout sources
+        uses: actions/checkout@v4
+
+      - name: Setup rust
+        uses: a-homelab/github-actions/actions/setup-rust@main
+
+      - name: Build
+        uses: a-homelab/github-actions/actions/rust-build@main
+        with:
+          options: ${{ inputs.build-options }}
+
+      - name: Test
+        uses: a-homelab/github-actions/actions/rust-test@main
+        with:
+          upload-coverage: "true"
+          codecov-token: ${{ secrets.CODECOV_TOKEN }}
+          options: ${{ inputs.test-options }}

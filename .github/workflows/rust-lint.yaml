@@ -1,0 +1,33 @@
+name: Rust Lint
+
+on:
+  workflow_call:
+
+jobs:
+  format:
+    name: Format
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout sources
+        uses: actions/checkout@v4
+      
+      - name: Setup rust
+        uses: a-homelab/github-actions/actions/setup-rust@main
+      
+      - name: Run cargo fmt
+        run: |-
+          cargo fmt --all -- --check
+
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout sources
+        uses: actions/checkout@v4
+      
+      - name: Setup rust
+        uses: a-homelab/github-actions/actions/setup-rust@main
+      
+      - name: Run cargo clippy
+        run: |-
+          cargo clippy -- -D warnings

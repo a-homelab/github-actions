@@ -1,0 +1,48 @@
+name: Rust Test
+description: Rust test
+
+inputs:
+  upload-coverage:
+    description: |
+      Whether to upload coverage to Codecov or not. Defaults to `true`.
+    default: "true"
+    required: false
+
+  codecov-token:
+    description: |
+      Codecov token. Required when `upload-coverage` is `true`.
+    required: false
+
+  options:
+    description: |
+      Test options. See https://nexte.st/docs/running/#options-and-arguments
+    required: false
+
+runs:
+  using: composite
+  steps:
+    - name: Add component
+      shell: bash
+      run: |-
+        rustup component add llvm-tools-preview
+
+    - name: Install cargo-llvm-cov
+      uses: taiki-e/install-action@cargo-llvm-cov
+
+    - name: Install cargo-nextest
+      uses: taiki-e/install-action@nextest
+
+    - name: Run tests and collect coverage
+      shell: bash
+      run: |-
+        cargo llvm-cov --all-features --workspace --no-report nextest ${{ inputs.options }}
+        cargo llvm-cov --no-report --doc
+        cargo llvm-cov report --doctests --codecov --output-path codecov.jso
+
+    - name: Upload coverage to Codecov
+      if: inputs.upload-coverage == 'true'
+      uses: codecov/codecov-action@v4
+      with:
+        token: ${{ inputs.codecov-token }}
+        files: lcov.info
+        fail_ci_if_error: true

@@ -1,0 +1,24 @@
+name: Rust Build (Cross)
+description: Rust build using Cross
+
+inputs:
+  target:
+    description: |
+      Target platform. See https://doc.rust-lang.org/rustc/platform-support.html
+    required: false
+
+  options:
+    description: |
+      Build options. See https://doc.rust-lang.org/cargo/commands/cargo-build.html#options
+    required: false
+
+runs:
+  using: composite
+  steps:
+    - name: Install cross
+      uses: taiki-e/install-action@cross
+
+    - name: Run cross build
+      shell: bash
+      run: |-
+        cross build --target ${{ inputs.target }} ${{ inputs.options }}

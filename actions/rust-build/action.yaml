@@ -1,0 +1,16 @@
+name: Rust Build
+description: Rust build
+
+inputs:
+  options:
+    description: |
+      Build options. See https://doc.rust-lang.org/cargo/commands/cargo-build.html#options
+    required: false
+
+runs:
+  using: composite
+  steps:
+    - name: Run cargo build
+      shell: bash
+      run: |-
+        cross build ${{ inputs.options }}

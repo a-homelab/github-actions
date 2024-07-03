@@ -1,0 +1,10 @@
+name: Rust Lint
+description: Rust lint
+
+runs:
+  using: composite
+  steps:
+    - name: Run cargo clippy
+      shell: bash
+      run: |-
+        cargo clippy -- -D warnings

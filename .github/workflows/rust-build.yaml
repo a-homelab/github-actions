@@ -1,0 +1,55 @@
+name: Rust Build
+
+on:
+  workflow_call:
+    inputs:
+      targets:
+        description: |
+          JSON-formatted list of target platforms. See https://doc.rust-lang.org/rustc/platform-support.html
+        default: "[]"
+        required: false
+        type: string
+
+      options:
+        description: |
+          Build options. See https://doc.rust-lang.org/cargo/commands/cargo-build.html#options
+        required: false
+        type: string
+
+jobs:
+  build:
+    name: Build
+    if: inputs.targets == '[]'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout sources
+        uses: actions/checkout@v4
+
+      - name: Setup rust
+        uses: a-homelab/github-actions/actions/setup-rust@main
+
+      - name: Build
+        uses: a-homelab/github-actions/actions/rust-build@main
+        with:
+          options: ${{ inputs.options }}
+
+  build-cross:
+    name: Build (Cross)
+    if: inputs.targets != '[]'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target: ${{ fromJson(inputs.targets) }}
+    steps:
+      - name: Checkout sources
+        uses: actions/checkout@v4
+
+      - name: Setup rust
+        uses: a-homelab/github-actions/actions/setup-rust@main
+
+      - name: Build
+        uses: a-homelab/github-actions/actions/rust-build-cross@main
+        with:
+          target: ${{ matrix.target }}
+          options: ${{ inputs.options }}

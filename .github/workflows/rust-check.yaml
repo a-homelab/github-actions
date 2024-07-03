@@ -1,0 +1,36 @@
+name: Rust Check
+
+on:
+  workflow_call:
+
+jobs:
+  check:
+    name: Check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout sources
+        uses: actions/checkout@v4
+      
+      - name: Setup rust
+        uses: a-homelab/github-actions/actions/setup-rust@main
+      
+      - name: Run cargo fmt
+        run: |-
+          cargo check
+
+  audit:
+    name: Audit
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout sources
+        uses: actions/checkout@v4
+      
+      - name: Setup rust
+        uses: a-homelab/github-actions/actions/setup-rust@main
+      
+      - name: Install cross
+        uses: taiki-e/install-action@cargo-audit
+      
+      - name: Run cargo audit
+        run: |-
+          cargo audit
