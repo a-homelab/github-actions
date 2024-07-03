@@ -10,6 +10,24 @@ inputs:
     description: Cache key appended to the default job-based key.
     required: false
 
+  cargo-registry-use-custom-github-auth:
+    description: Whether to configure cargo with authentication to Github. Defaults to `false`.
+    default: "false"
+    required: false
+
+  cargo-registry-github-app-id:
+    description: Github App id used for cargo registry authentication.
+    required: false
+
+  cargo-registry-github-app-private-key:
+    description: Github App private key used for cargo registry authentication.
+    required: false
+
+  cargo-registry-github-app-owner:
+    description: Github App owner used for cargo registry authentication.
+    default: ${{ github.repository_owner }}
+    required: false
+
 runs:
   using: composite
   steps:
@@ -30,6 +48,23 @@ runs:
       with:
         shared-key: ${{ inputs.cache-shared-key }}
         key: ${{ inputs.cache-key }}
-    
+
     - name: Install cargo-binstall
       uses: cargo-bins/cargo-binstall@main
+
+    - name: Generate Github App token
+      if: inputs.cargo-registry-use-custom-github-auth == 'true'
+      id: app-token
+      uses: actions/create-github-app-token@v1
+      with:
+        app-id: ${{ inputs.cargo-registry-github-app-id }}
+        private-key: ${{ inputs.cargo-registry-github-app-private-key }}
+        owner: ${{ inputs.cargo-registry-github-app-owner }}
+
+    - name: Configure git for cargo dependencies
+      if: inputs.cargo-registry-use-custom-github-auth == 'true'
+      shell: bash
+      run: |
+        git config --global http.https://github.com/.extraheader "AUTHORIZATION: basic $(echo -n "x-access-token:${GITHUB_TOKEN}" | base64)"
+      env:
+        GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
