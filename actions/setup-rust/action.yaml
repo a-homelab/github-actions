@@ -64,7 +64,8 @@ runs:
     - name: Configure git for cargo dependencies
       if: inputs.cargo-registry-use-custom-github-auth == 'true'
       shell: bash
-      run: |
+      run: |-
         git config --global http.https://github.com/.extraheader "AUTHORIZATION: basic $(echo -n "x-access-token:${GITHUB_TOKEN}" | base64)"
+        echo "CARGO_NET_GIT_FETCH_WITH_CLI='true'" >> "${GITHUB_ENV}"
       env:
         GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
