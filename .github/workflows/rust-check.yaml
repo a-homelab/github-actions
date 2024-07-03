@@ -2,6 +2,40 @@ name: Rust Check
 
 on:
   workflow_call:
+    inputs:
+      ################################################################################
+      #
+      # setup-rust related inputs
+      #
+      ################################################################################
+      cache-shared-key:
+        description: Cache key used instead of the default job-based key.
+        required: false
+        type: string
+
+      cache-key:
+        description: Cache key appended to the default job-based key.
+        required: false
+        type: string
+
+      cargo-registry-use-custom-github-auth:
+        description: Whether to configure cargo with authentication to Github. Defaults to `false`.
+        default: false
+        required: false
+        type: boolean
+
+      cargo-registry-github-app-owner:
+        description: Github App owner used for cargo registry authentication.
+        default: ${{ github.repository_owner }}
+        required: false
+        type: string
+
+    secrets:
+      CARGO_REGISTRY_GITHUB_APP_ID:
+        required: false
+
+      CARGO_REGISTRY_GITHUB_APP_PRIVATE_KEY:
+        required: false
 
 jobs:
   check:
@@ -10,10 +44,17 @@ jobs:
     steps:
       - name: Checkout sources
         uses: actions/checkout@v4
-      
+
       - name: Setup rust
         uses: a-homelab/github-actions/actions/setup-rust@main
-      
+        with:
+          cache-shared-key: ${{ inputs.cache-shared-key }}
+          cache-key: ${{ inputs.cache-key }}
+          cargo-registry-use-custom-github-auth: ${{ inputs.cargo-registry-use-custom-github-auth }}
+          cargo-registry-github-app-id: ${{ secrets.CARGO_REGISTRY_GITHUB_APP_ID }}
+          cargo-registry-github-app-private-key: ${{ secrets.CARGO_REGISTRY_GITHUB_APP_PRIVATE_KEY }}
+          cargo-registry-github-app-owner: ${{ inputs.cargo-registry-github-app-owner }}
+
       - name: Run cargo fmt
         run: |-
           cargo check
@@ -24,13 +65,13 @@ jobs:
     steps:
       - name: Checkout sources
         uses: actions/checkout@v4
-      
+
       - name: Setup rust
         uses: a-homelab/github-actions/actions/setup-rust@main
-      
+
       - name: Install cross
         uses: taiki-e/install-action@cargo-audit
-      
+
       - name: Run cargo audit
         run: |-
           cargo audit
