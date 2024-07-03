@@ -1,0 +1,35 @@
+name: Rust Setup
+description: Rust tooling setup
+
+inputs:
+  cache-shared-key:
+    description: Cache key used instead of the default job-based key.
+    required: false
+
+  cache-key:
+    description: Cache key appended to the default job-based key.
+    required: false
+
+runs:
+  using: composite
+  steps:
+    - name: Install stable toolchain
+      uses: actions-rust-lang/setup-rust-toolchain@v1
+      with:
+        toolchain: stable
+        cache: "false"
+
+    - name: Setup sccache
+      uses: mozilla-actions/sccache-action@v0.0.5
+      env:
+        SCCACHE_GHA_ENABLED: "true"
+        RUSTC_WRAPPER: "sccache"
+
+    - name: Cache toolchain and dependencies
+      uses: Swatinem/rust-cache@v2
+      with:
+        shared-key: ${{ inputs.cache-shared-key }}
+        key: ${{ inputs.cache-key }}
+    
+    - name: Install cargo-binstall
+      uses: cargo-bins/cargo-binstall@main
