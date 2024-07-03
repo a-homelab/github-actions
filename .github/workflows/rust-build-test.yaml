@@ -36,15 +36,13 @@ on:
         required: false
         type: boolean
 
-      cargo-registry-github-app-id-secret-name:
-        description: Name of the secret containing the Github App id used for cargo registry authentication.
-        default: CARGO_REGISTRY_GITHUB_APP_ID
+      cargo-registry-github-app-id:
+        description: Github App id used for cargo registry authentication.
         required: false
         type: string
 
-      cargo-registry-github-app-private-key-secret-name:
-        description: Name of the secret containing the Github App private key used for cargo registry authentication.
-        default: CARGO_REGISTRY_GITHUB_APP_PRIVATE_KEY
+      cargo-registry-github-app-private-key:
+        description: Github App private key used for cargo registry authentication.
         required: false
         type: string
 
@@ -55,12 +53,6 @@ on:
         type: string
 
     secrets:
-      CARGO_REGISTRY_GITHUB_APP_ID:
-        required: false
-
-      CARGO_REGISTRY_GITHUB_APP_PRIVATE_KEY:
-        required: false
-
       CODECOV_TOKEN:
         required: false
 
@@ -78,8 +70,8 @@ jobs:
           cache-shared-key: ${{ inputs.cache-shared-key }}
           cache-key: ${{ inputs.cache-key }}
           cargo-registry-use-custom-github-auth: ${{ inputs.cargo-registry-use-custom-github-auth }}
-          cargo-registry-github-app-id: ${{ secrets[inputs.cargo-registry-github-app-id-secret-name] }}
-          cargo-registry-github-app-private-key: ${{ secrets[inputs.cargo-registry-github-app-private-key-secret-name] }}
+          cargo-registry-github-app-id: ${{ inputs.cargo-registry-github-app-id }}
+          cargo-registry-github-app-private-key: ${{ inputs.cargo-registry-github-app-private-key }}
           cargo-registry-github-app-owner: ${{ inputs.cargo-registry-use-custom-github-auth }}
 
       - name: Build
