@@ -13,4 +13,4 @@ runs:
     - name: Run cargo build
       shell: bash
       run: |-
-        cross build ${{ inputs.options }}
+        cargo build ${{ inputs.options }}
