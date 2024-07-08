@@ -1,0 +1,6 @@
+{
+  "platform": "github",
+  "autodiscover": "true",
+  "dryRun": true,
+  "printConfig": true
+}
