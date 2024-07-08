@@ -1,0 +1,19 @@
+name: Matrix Include
+description: Compute matrix include from include file
+
+inputs:
+  include-file:
+    description: Include file containing matrix keys and include configurations.
+    required: true
+
+  matrix:
+    description: Input matrix.
+    required: true
+
+outputs:
+  include:
+    description: JSON-formatted includes array that can be passed to an `include` directive
+
+runs:
+  using: node20
+  main: dist/index.js
