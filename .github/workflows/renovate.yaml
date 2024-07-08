@@ -1,0 +1,35 @@
+name: Renovate
+
+on:
+  schedule:
+    - cron: "0 1 * * *"
+
+jobs:
+  renovate:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        org:
+          - benfuu
+          - a-homelab
+          - pixie-duster
+    steps:
+      - name: Checkout sources
+        uses: actions/checkout@v4
+
+      - name: Generate Github App token
+        id: app-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.RENOVATE_GITHUB_APP_ID }}
+          private-key: ${{ secrets.RENOVATE_GITHUB_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+
+      - name: Self-hosted Renovate
+        uses: renovatebot/github-action@v40.2.1
+        with:
+          configurationFile: example/renovate-config.js
+          token: ${{ steps.app-token.outputs.token }}
+        env:
+          RENOVATE_AUTODISCOVER_FILTER: "${{ matrix.org }}/*"

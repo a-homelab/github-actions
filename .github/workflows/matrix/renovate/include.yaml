@@ -1,0 +1,6 @@
+
+matrix:
+  - key: org
+    include:
+      - org: a-homelab
+        githubAppInstallationId: 1234
