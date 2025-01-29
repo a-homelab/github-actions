@@ -1,0 +1,127 @@
+name: Compute Image Tags
+description: Composite action for computing image tags
+
+inputs:
+  service-name:
+    description: Canonical service name. Must be unique across all services.
+    required: true
+
+  registries:
+    description: |
+      Registries to use. Valid values are: `ecr`,`ghcr`. Defaults to `["ecr"]`.
+    default: '["ecr"]'
+    required: false
+  
+  tag-latest:
+    description: Whether to tag and push latest
+    default: "true"
+    required: false
+
+  tags:
+    description: Custom tags for the image
+    required: false
+
+outputs:  
+  images:
+    description: Image names
+    value: ${{ steps.custom-tags.outputs.images }}
+  
+  tags:
+    description: Image tags
+    value: ${{ steps.custom-tags.outputs.tags }}
+
+runs:
+  using: composite
+  steps:
+    - name: Login to ECR
+      id: login-ecr
+      uses: a-homelab/github-actions/actions/login-ecr@main
+
+    - name: Compute short SHA
+      id: short-sha
+      uses: a-homelab/github-actions/actions/short-sha@main
+
+    - name: Convert Github ref to valid Docker tag
+      id: canonicalize-github-ref
+      shell: bash
+      run: echo "github-ref-docker-tag=$(echo "${GITHUB_REF_NAME}" | sed 's/[^a-zA-Z0-9]/-/g')" >> "${GITHUB_OUTPUT}"
+    
+    - name: Compute custom tags
+      id: custom-tags
+      shell: bash
+      run: |
+        declare -a images=()
+        readarray -t registries < <(echo "${REGISTRIES}" | jq -rc '.[]')
+        for registry in "${registries[@]}"
+        do
+          # Compute image name from registry
+          if [[ "${registry}" == 'ecr' ]]
+          then
+            images+=("${ECR_REGISTRY}/a-homelab/${SERVICE_NAME}")
+          elif [[ "${registry}" == 'ghcr' ]]
+          then
+            images+=("ghcr.io/a-homelab/${SERVICE_NAME}")
+          else
+            echo "Invalid registry: ${registry}"
+            continue
+          fi
+        done
+
+        EOF=$(dd if=/dev/urandom bs=15 count=1 status=none | base64)
+        echo "images<<${EOF}" >> "${GITHUB_OUTPUT}"
+        for image in "${images[@]}"
+        do
+          echo "${image}" >> "${GITHUB_OUTPUT}"
+        done
+        echo "${EOF}" >> "${GITHUB_OUTPUT}"
+
+        # If tags are provided, simply loop through tags and append to image name
+        if [[ ! -z "${TAGS}" ]]
+        then
+          EOF=$(dd if=/dev/urandom bs=15 count=1 status=none | base64)
+          echo "tags<<${EOF}" >> "${GITHUB_OUTPUT}"
+
+          while IFS= read -r tag
+          do
+            if [[ "${tag}" == '' ]]
+            then
+              continue
+            fi
+            for image in "${images[@]}"
+            do
+              # Strip any 'v' prefix
+              sanitized_tag="${tag#v}"
+              echo "${image}:${sanitized_tag}" >> "${GITHUB_OUTPUT}"
+            done
+          done <<< "${TAGS}"
+
+          echo "${EOF}" >> "${GITHUB_OUTPUT}"
+
+        # Use default tags rules
+        else
+          EOF=$(dd if=/dev/urandom bs=15 count=1 status=none | base64)
+          echo "tags<<${EOF}" >> "${GITHUB_OUTPUT}"
+
+          for image in "${images[@]}"
+          do
+            # echo "${image}:${GITHUB_REF_DOCKER_TAG}" >> "${GITHUB_OUTPUT}"
+            echo "${image}:${GITHUB_REF_DOCKER_TAG}-${SHORT_SHA}" >> "${GITHUB_OUTPUT}"
+
+            # Additional tags for canonical "latest"
+            if [[ "${TAG_LATEST}" == 'true' ]]
+            then
+              echo "${image}:latest" >> "${GITHUB_OUTPUT}"
+              echo "${image}:${SHORT_SHA}" >> "${GITHUB_OUTPUT}"
+            fi
+          done
+
+          echo "${EOF}" >> "${GITHUB_OUTPUT}"
+        fi
+      env:
+        REGISTRIES: ${{ inputs.registries }}
+        TAGS: ${{ inputs.tags }}
+        TAG_LATEST: ${{ inputs.tag-latest }}
+        ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        SERVICE_NAME: ${{ inputs.service-name }}
+        GITHUB_REF_DOCKER_TAG: ${{ steps.canonicalize-github-ref.outputs.github-ref-docker-tag }}
+        SHORT_SHA: ${{ steps.short-sha.outputs.short-sha }}

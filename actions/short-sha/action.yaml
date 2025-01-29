@@ -1,0 +1,15 @@
+name: Compute Short SHA from Github Ref
+description: Composite action for computing a 7-character short SHA from the current Github ref
+
+outputs:
+  short-sha:
+    description: Short Github SHA
+    value: ${{ steps.compute-short-sha.outputs.short-sha }}
+
+runs:
+  using: composite
+  steps:
+    - name: Compute short SHA
+      id: compute-short-sha
+      shell: bash
+      run: echo "short-sha=$(echo ${GITHUB_SHA} | cut -c1-7)" >> "${GITHUB_OUTPUT}"

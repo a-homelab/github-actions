@@ -1,0 +1,52 @@
+name: Python Setup
+description: Composite action for setting up Python tooling
+
+inputs:
+  tool:
+    description: |-
+      Python build tool to use. Valid values are `poetry`, `uv`. Defaults to `poetry`
+    required: false
+    default: poetry
+
+  python-version:
+    description: |-
+      Python version to use.
+    required: false
+
+  python-version-file:
+    description: |-
+      Python version file to use.
+    required: false
+  
+  system-dependencies:
+    description: Additional operating system dependencies
+    required: false
+
+runs:
+  using: composite
+  steps:    
+    - name: Install additional dependencies
+      if: inputs.system-dependencies != ''
+      shell: bash
+      run: |
+        sudo apt-get update
+        sudo apt-get install ${{ inputs.system-dependencies }}
+
+    - name: Install poetry
+      if: inputs.tool == 'poetry'
+      shell: bash
+      run: |-
+        pipx install poetry
+    
+    - name: Install uv
+      if: inputs.tool == 'uv'
+      uses: astral-sh/setup-uv@v3
+      with:
+        enable-cache: true
+
+    - name: Setup Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ inputs.python-version }}
+        python-version-file: ${{ inputs.python-version-file }}
+        cache: ${{ inputs.tool == 'poetry' && 'poetry' || '' }}

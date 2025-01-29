@@ -1,0 +1,304 @@
+name: Docker Build and Push
+
+on:
+  workflow_call:
+    inputs:
+      service-name:
+        description: Canonical service name. Must be unique across all services.
+        required: true
+        type: string
+      
+      registries:
+        description: |
+          JSON-formated list of registries to use. Valid values are: `ecr`,`ghcr`. Defaults to `["ecr"]`.
+        default: '["ecr"]'
+        required: false
+        type: string
+
+      context:
+        description: Build context
+        default: "."
+        required: false
+        type: string
+
+      file:
+        description: Path to Dockerfile
+        default: "./Dockerfile"
+        required: false
+        type: string
+
+      build-args:
+        description: List of Docker build args
+        required: false
+        type: string
+
+      target:
+        description: Target stage
+        required: false
+        type: string
+
+      platforms:
+        description: |
+          JSON-formatted list of container image target platforms. Defaults to `["linux/amd64"]`. See: https://docs.docker.com/build/building/multi-platform/ for valid values.
+        default: '["linux/amd64"]'
+        required: false
+        type: string
+
+      tag-latest:
+        description: Whether to tag and push latest
+        default: true
+        required: false
+        type: boolean
+
+      tags:
+        description: Custom tags for the docker image
+        required: false
+        type: string
+
+      submodules:
+        description: Whether to checkout submodules
+        default: false
+        required: false
+        type: boolean
+
+      # https://docs.docker.com/engine/reference/commandline/buildx_build/#cache-from
+      cache-from:
+        description: Whether to enable lfs or not
+        required: false
+        type: string
+
+      # https://docs.docker.com/engine/reference/commandline/buildx_build/#cache-to
+      cache-to:
+        description: Whether to enable lfs or not
+        required: false
+        type: string
+
+      allow-fail:
+        description: Wether to allow the workflow to continue if the job fails
+        default: false
+        required: false
+        type: boolean
+
+      runs-on:
+        description: Runner tag to run this workflow on
+        default: ubuntu-latest
+        required: false
+        type: string
+
+      runs-on-linux-amd64:
+        description: Runner tag to run this workflow on for linux/amd64
+        default: ubuntu-latest
+        required: false
+        type: string
+
+      runs-on-linux-arm64:
+        description: Runner tag to run this workflow on for linux/arm64
+        default: ubuntu-latest-arm64
+        required: false
+        type: string
+
+    outputs:
+      registry:
+        description: Container registry
+        value: ${{ jobs.build-push.outputs.registry }}
+      short-sha:
+        description: Short SHA that can be used as a rolling tag
+        value: ${{ jobs.build-push.outputs.short-sha }}
+      image-with-sha:
+        description: Full image name with SHA
+        value: ${{ jobs.build-push.outputs.image-with-sha }}
+      repository:
+        description: ECR repository
+        value: ${{ jobs.build-push.outputs.repository }}
+      digest:
+        description: Image digest
+        value: ${{ jobs.build-push.outputs.digest }}
+      image-ref:
+        description: Full image ref with digest
+        value: ${{ jobs.build-push.outputs.image-ref }}
+
+# Permissions for Github OIDC -> AWS
+# https://docs.github.com/en/actions/security-for-github-actions/security-hardening-your-deployments/configuring-openid-connect-in-amazon-web-services#adding-permissions-settings
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  compute-tags:
+    name: Compute image tags
+    runs-on: ubuntu-latest
+    outputs:
+      images: ${{ steps.compute-tags.outputs.images }}
+      tags: ${{ steps.compute-tags.outputs.tags }}
+    steps:
+      - name: Compute tags
+        id: compute-tags
+        uses: a-homelab/github-actions/actions/compute-image-tags@main
+        with:
+          service-name: ${{ inputs.service-name }}
+          registries: ${{ inputs.registries }}
+          tag-latest: ${{ inputs.tag-latest }}
+          tags: ${{ inputs.tags }}
+  
+  compute-include:
+    name: Compute include for matrix
+    runs-on: ubuntu-latest
+    outputs:
+      include: ${{ steps.compute-include.outputs.include }}
+    steps:
+      - name: Compute included
+        id: compute-include
+        run: |-
+          tee matrix-config.json <<EOF
+            {
+              "matrixPlatforms": ${MATRIX_PLATFORMS},
+              "include": [
+                {
+                  "platform": "linux/amd64",
+                  "runner": "${{ inputs.runs-on-linux-amd64 }}"
+                },
+                {
+                  "platform": "linux/arm64",
+                  "runner": "${{ inputs.runs-on-linux-arm64 }}"
+                }
+              ]
+            }
+            
+          EOF
+          cat matrix-config.json
+          echo "include="$(cat matrix-config.json | jq -rc '[ .matrixPlatforms as $platforms_list | .include[] | select(.platform as $platform | $platforms_list | index($platform)) ]')"" >> "${GITHUB_OUTPUT}"
+        env:
+          MATRIX_PLATFORMS: ${{ inputs.platforms }}
+  
+  generate-artifacts-suffix:
+    name: Generate unique suffix for artifacts within the matrix run
+    runs-on: ubuntu-latest
+    outputs:
+      suffix: ${{ steps.generate-suffix.outputs.suffix }}
+    steps:
+      - name: Generate suffix
+        id: generate-suffix
+        run: |-
+          echo "suffix="$(dd bs=512 if=/dev/urandom count=1 2>/dev/null | LC_ALL=C tr -dc 'a-zA-Z0-9' | head -c 7)"" >> "${GITHUB_OUTPUT}"
+
+  build-push:
+    name: Docker Build and Push ${{ inputs.service-name }} ${{ matrix.platform }}
+    needs:
+      - compute-tags
+      - compute-include
+      - generate-artifacts-suffix
+    runs-on: ${{ matrix.runner }}
+    continue-on-error: ${{ inputs.allow-fail }}
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: ${{ fromJson(inputs.platforms) }}
+        include: ${{ fromJson(needs.compute-include.outputs.include) }}
+    outputs:
+      registry: ${{ steps.build-push.outputs.registry }}
+      short-sha: ${{ steps.build-push.outputs.short-sha }}
+      image-with-sha: ${{ steps.build-push.outputs.image-with-sha }}
+      repository: ${{ steps.build-push.outputs.repository }}
+      digest: ${{ steps.build-push.outputs.digest }}
+      image-ref: ${{ steps.build-push.outputs.image-ref }}
+    steps:
+      - name: Create Github App token
+        uses: actions/create-github-app-token@v1
+        id: app-token
+        with:
+          app-id: ${{ secrets.RELEASE_BOT_APP_ID }}
+          private-key: ${{ secrets.RELEASE_BOT_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+          submodules: ${{ inputs.submodules }}
+
+      - name: Build and push container
+        id: build-push
+        uses: a-homelab/github-actions/actions/build-push-container@main
+        with:
+          service-name: ${{ inputs.service-name }}
+          registries: ${{ inputs.registries }}
+          context: ${{ inputs.context }}
+          file: ${{ inputs.file }}
+          build-args: ${{ inputs.build-args }}
+          target: ${{ inputs.target }}
+          platforms: ${{ matrix.platform }}
+          tag-latest: ${{ inputs.tag-latest }}
+          tags: ${{ needs.compute-tags.outputs.tags }}
+          digest-only: ${{ strategy.job-total > 1 && 'true' || 'false' }}
+          artifacts-suffix: ${{ needs.generate-artifacts-suffix.outputs.suffix }}
+          cache-from: ${{ inputs.cache-from }}
+          cache-to: ${{ inputs.cache-to }}
+          release-bot-github-app-id: ${{ secrets.RELEASE_BOT_APP_ID }}
+          release-bot-github-app-private-key: ${{ secrets.RELEASE_BOT_PRIVATE_KEY }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+  merge:
+    name: Merge image manifests ${{ inputs.service-name }}
+    runs-on: ubuntu-latest
+    continue-on-error: ${{ inputs.allow-fail }}
+    needs:
+      - compute-tags
+      - generate-artifacts-suffix
+      - build-push
+    steps:
+      - name: Download digests
+        uses: actions/download-artifact@v4
+        with:
+          path: /tmp/digests
+          pattern: 'digests-*-${{ needs.generate-artifacts-suffix.outputs.suffix }}'
+          merge-multiple: true
+      
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      
+      - name: Login to ECR
+        if: contains(fromJson(inputs.registries), 'ecr')
+        id: login-ecr
+        uses: a-homelab/github-actions/actions/login-ecr@main
+      
+      - name: Log in to ghcr
+        if: contains(fromJson(inputs.registries), 'ghcr')
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: Create manifest list and push
+        working-directory: /tmp/digests
+        run: |
+          tags_args=()
+          while IFS= read -r tag
+          do
+            if [[ "${tag}" == '' ]]
+            then
+              continue
+            fi
+            tags_args+=("-t")
+            tags_args+=("${tag}")
+          done <<< "${TAGS}"
+
+          echo "command: docker buildx imagetools create ${tags_args[@]} $(printf '${{ needs.build-push.outputs.repository }}@sha256:%s ' *)"
+
+          docker buildx imagetools create ${tags_args[@]} \
+            $(printf '${{ needs.build-push.outputs.repository }}@sha256:%s ' *)
+        env:
+          TAGS: ${{ needs.compute-tags.outputs.tags }}
+      
+      - name: Inspect image
+        run: |
+          while IFS= read -r tag
+          do
+            if [[ "${tag}" == '' ]]
+            then
+              continue
+            fi
+            docker buildx imagetools inspect "${tag}"
+          done <<< "${TAGS}"
+        env:
+          TAGS: ${{ needs.compute-tags.outputs.tags }}

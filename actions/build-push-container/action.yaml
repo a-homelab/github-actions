@@ -1,0 +1,199 @@
+name: Build and Push Container
+description: Composite action for pushing a container
+
+inputs:
+  service-name:
+    description: Canonical service name. Must be unique across all services.
+    required: true
+
+  registries:
+    description: |
+      Registries to use. Valid values are: `ecr`,`ghcr`. Defaults to `["ecr"]`.
+    default: '["ecr"]'
+    required: false
+
+  context:
+    description: Build context
+    default: "."
+    required: false
+  
+  file:
+    description: Path to Dockerfile
+    default: "./Dockerfile"
+    required: false
+
+  build-args:
+    description: List of Docker build args
+    required: false
+  
+  target:
+    description: Target stage
+    required: false
+
+  platforms:
+    description: List of target platforms
+    default: linux/amd64
+    required: false
+  
+  tag-latest:
+    description: Whether to tag and push latest
+    default: "true"
+    required: false
+
+  tags:
+    description: Custom tags for the image
+    required: false
+
+  digest-only:
+    description: Whether or not to push digest only (no tags). If provided, ignores any tag-related inputs.
+    default: "false"
+    required: false
+
+  artifacts-suffix:
+    description: Additional suffix to add to the generated digest artifacts. The full suffix will be `digests-<PLATFORM>-<SUFFIX>`.
+    required: true
+  
+  # https://docs.docker.com/engine/reference/commandline/buildx_build/#cache-from
+  cache-from:
+    description: Whether to enable lfs or not
+    required: false
+  
+  # https://docs.docker.com/engine/reference/commandline/buildx_build/#cache-to
+  cache-to:
+    description: Whether to enable lfs or not
+    required: false
+  
+  release-bot-github-app-id:
+    description: Release bot Github App ID
+    required: true
+
+  release-bot-github-app-private-key:
+    description: Release bot Github App private key
+    required: true
+
+  github-token:
+    description: Github token for ghcr
+    required: true
+
+outputs:
+  registry:
+    description: Container registry
+    value: ${{ steps.login-ecr.outputs.registry }}
+
+  short-sha:
+    description: Computed short SHA for the current commit
+    value: ${{ steps.short-sha.outputs.short-sha }}
+
+  image-with-sha:
+    description: Full container image with SHA tag
+    value: ${{ steps.login-ecr.outputs.registry }}/a-homelab/${{ inputs.service-name }}:${{ steps.canonicalize-github-ref.outputs.github-ref-docker-tag }}-${{ steps.short-sha.outputs.short-sha }}
+  
+  repository:
+    description: Container repository
+    value: ${{ steps.login-ecr.outputs.registry }}/a-homelab/${{ inputs.service-name }}
+
+  digest:
+    description: Image digest
+    value: ${{ steps.build-push.outputs.digest }}
+  
+  image-ref:
+    description: Full image ref with digest
+    value: ${{ steps.login-ecr.outputs.registry }}/a-homelab/${{ inputs.service-name }}@${{ steps.build-push.outputs.digest }}
+
+runs:
+  using: composite
+  steps:
+    - name: Create Github App token
+      uses: actions/create-github-app-token@v1
+      id: app-token
+      with:
+        app-id: ${{ inputs.release-bot-github-app-id }}
+        private-key: ${{ inputs.release-bot-github-app-private-key }}
+        owner: ${{ github.repository_owner }}
+    
+    - name: Prepare
+      shell: bash
+      run: |
+        platform=${{ inputs.platforms }}
+        platform_pair="${platform//\//-}" >> "${GITHUB_ENV}"
+        echo "DIGEST_ARTIFACT_NAME=digests-${platform_pair}-${DIGEST_ARTIFACTS_SUFFIX}" >> "${GITHUB_ENV}"
+      env:
+        DIGEST_ARTIFACTS_SUFFIX: ${{ inputs.artifacts-suffix }}
+
+    - name: Login to ECR
+      id: login-ecr
+      uses: a-homelab/github-actions/actions/login-ecr@main
+    
+    - name: Log in to ghcr
+      if: contains(fromJson(inputs.registries), 'ghcr')
+      uses: docker/login-action@v3
+      with:
+        registry: ghcr.io
+        username: ${{ github.actor }}
+        password: ${{ inputs.github-token }}
+
+    - name: Prepare trivy for ghcr
+      if: contains(fromJson(inputs.registries), 'ghcr')
+      shell: bash
+      run: |
+        echo 'TRIVY_USERNAME=${{ github.actor }}' >> "${GITHUB_ENV}"
+        echo 'TRIVY_PASSWORD=${{ inputs.github-token }}' >> "${GITHUB_ENV}"
+
+    - name: Compute short SHA
+      id: short-sha
+      uses: a-homelab/github-actions/actions/short-sha@main
+
+    - name: Convert Github ref to valid Docker tag
+      id: canonicalize-github-ref
+      shell: bash
+      run: echo "github-ref-docker-tag=$(echo "${GITHUB_REF_NAME}" | sed 's/[^a-zA-Z0-9]/-/g')" >> "${GITHUB_OUTPUT}"
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+
+    - name: Build and push ${{ inputs.service-name }}
+      uses: docker/build-push-action@v6
+      id: build-push
+      continue-on-error: false
+      with:
+        context: ${{ inputs.context }}
+        file: ${{ inputs.file }}
+        build-args: ${{ inputs.build-args }}
+        target: ${{ inputs.target }}
+        secrets: |
+          github_token=${{ steps.app-token.outputs.token }}
+        platforms: ${{ inputs.platforms }}
+        push: true
+        tags: ${{ inputs.digest-only == 'false' && inputs.tags || '' }}
+        outputs: ${{ inputs.digest-only == 'true' && format('type=image,name={0}/a-homelab/{1},push-by-digest=true,name-canonical=true,push=true', steps.login-ecr.outputs.registry, inputs.service-name) || '' }}
+        cache-from: ${{ inputs.cache-from }}
+        cache-to: ${{ inputs.cache-to }}
+
+    - name: Export digest
+      shell: bash
+      run: |
+        mkdir -p /tmp/digests
+        digest="${{ steps.build-push.outputs.digest }}"
+        touch "/tmp/digests/${digest#sha256:}"          
+    
+    # Produces an artifact with with following structure:
+    # Artifact name: `digests-<PLATFORM>-<ADDITIONAL_SUFFIX>` where platform is the input Docker platform with slashes replaced with dashes (e.g. `digests-linux-amd64`)
+    # Artifact file names: the digest sha256 sum without the `sha256:` prefix
+    - name: Upload digest
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ env.DIGEST_ARTIFACT_NAME }}
+        path: /tmp/digests/*
+        if-no-files-found: error
+        retention-days: 1
+    
+    - name: Scan image
+      uses: aquasecurity/trivy-action@0.20.0
+      with:
+        scan-type: image
+        image-ref: ${{ steps.login-ecr.outputs.registry }}/a-homelab/${{ inputs.service-name }}@${{ steps.build-push.outputs.digest }}
+        format: table
+      env:
+        # See: https://github.com/aquasecurity/trivy-action/issues/389
+        TRIVY_DB_REPOSITORY: public.ecr.aws/aquasecurity/trivy-db:2
+        TRIVY_PLATFORM: ${{ inputs.platforms }}

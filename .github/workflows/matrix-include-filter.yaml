@@ -1,0 +1,59 @@
+name: Matrix Include Filter
+
+on:
+  workflow_call:
+    inputs:
+      matrix:
+        type: string
+        description: Input matrix as a JSON-formatted array. E.g. '["a"]'
+        required: true
+
+      include:
+        type: string
+        description: |
+          Include values as a YAML-formatted array. Example:
+          ```yaml
+            - key1: a
+              key2: 1
+            - key1: b
+              key2: 44
+          ```
+        required: true
+
+      key:
+        type: string
+        description: Key to use for filtering include values from matrix. E.g. 'key1'
+        required: true
+    
+    outputs:
+      include:
+        description: Dynamic include array as a JSON-formatted string
+        value: ${{ jobs.compute-include.outputs.include }}
+      
+jobs:
+  compute-include:
+    name: Compute include for matrix
+    runs-on: ubuntu-latest
+    outputs:
+      include: ${{ steps.compute-include.outputs.include }}
+    steps:
+      - name: Compute include
+        id: compute-include
+        run: |-
+          include_json="$(echo "${INCLUDE}" | yq eval -o json -I=0 -)"
+          echo "${include_json}"
+
+          tee matrix-config.json <<EOF
+            {
+              "matrix": ${MATRIX},
+              "include": ${include_json}
+            }  
+          EOF
+
+          cat matrix-config.json
+          output_include="$(cat matrix-config.json | jq -rc '[ .matrix as $matrix | .include[] | select(.${{ inputs.key }} as $key | $matrix | index($key)) ]')"
+          echo "${output_include}"
+          echo "include=${output_include}" >> "${GITHUB_OUTPUT}"
+        env:
+          MATRIX: ${{ inputs.matrix }}
+          INCLUDE: ${{ inputs.include }}

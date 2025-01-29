@@ -1,0 +1,19 @@
+name: Compute Short SHA from Github Ref
+
+on:
+  workflow_call:    
+    outputs:
+      short-sha:
+        description: 7-character short SHA
+        value: ${{ jobs.get-short-sha.outputs.short-sha }}
+
+jobs:
+  get-short-sha:
+    name: Get short SHA
+    runs-on: ubuntu-latest
+    outputs:
+      short-sha: ${{ steps.compute-short-sha.outputs.short-sha }}
+    steps:
+      - name: Compute short SHA
+        uses: a-homelab/github-actions/actions/short-sha@main
+        id: compute-short-sha
