@@ -18,8 +18,14 @@ jobs:
         run: |
           bun install -g @anthropic-ai/claude-code
           echo "$HOME/.bun/bin" >> "${GITHUB_PATH}"
+          ls -la "$HOME/.bun/bin/"
+          echo "PATH will be: $HOME/.bun/bin:$PATH"
+          which claude || true
 
       - name: Run Claude Code
-        run: claude -p "Hello! Starting daily session."
+        run: |
+          which claude || true
+          echo "PATH: $PATH"
+          claude -p "Hello! Starting daily session."
         env:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
