@@ -18,6 +18,6 @@ jobs:
         run: bun install -g @anthropic-ai/claude-code
 
       - name: Run Claude Code
-        run: claude -p "Hello! Starting daily session."
+        run: bunx claude -p "Hello! Starting daily session."
         env:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
