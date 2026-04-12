@@ -10,15 +10,8 @@ jobs:
   claude:
     runs-on: ubuntu-latest
     steps:
-      - uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: latest
-
       - name: Install Claude Code
-        run: |
-          bun install -g @anthropic-ai/claude-code
-          echo "$(bun pm bin -g)" >> "${GITHUB_PATH}"
-          ls -la "$(bun pm bin -g)/"
+        run: npm install -g @anthropic-ai/claude-code
 
       - name: Run Claude Code
         run: claude -p "Hello! Starting daily session."
