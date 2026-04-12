@@ -15,9 +15,12 @@ jobs:
           bun-version: latest
 
       - name: Install Claude Code
-        run: bun add @anthropic-ai/claude-code
+        run: |
+          bun install -g @anthropic-ai/claude-code
+          echo "$(bun pm bin -g)" >> "${GITHUB_PATH}"
+          ls -la "$(bun pm bin -g)/"
 
       - name: Run Claude Code
-        run: ./node_modules/.bin/claude -p "Hello! Starting daily session."
+        run: claude -p "Hello! Starting daily session."
         env:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
