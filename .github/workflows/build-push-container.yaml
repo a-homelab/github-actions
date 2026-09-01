@@ -126,6 +126,18 @@ on:
         required: false
         type: string
 
+    secrets:
+      # Both optional. Supply them only when the build needs to reach private
+      # repos the caller's GITHUB_TOKEN cannot: private submodules, or a
+      # Dockerfile consuming the `github_token` build secret. Omit them and
+      # the workflow falls back to the caller's GITHUB_TOKEN throughout.
+      RELEASE_BOT_APP_ID:
+        description: Release bot Github App ID
+        required: false
+      RELEASE_BOT_PRIVATE_KEY:
+        description: Release bot Github App private key
+        required: false
+
     outputs:
       registry:
         description: Container registry
@@ -221,7 +233,12 @@ jobs:
       digest: ${{ steps.build-push.outputs.digest }}
       image-ref: ${{ steps.build-push.outputs.image-ref }}
     steps:
+      # Optional. A release-bot App token is only needed to reach private
+      # repos the caller's GITHUB_TOKEN cannot see (private submodules, or a
+      # Dockerfile that clones a sibling repo via the github_token secret).
+      # Callers that pass no App secrets fall back to GITHUB_TOKEN below.
       - name: Create Github App token
+        if: ${{ secrets.RELEASE_BOT_APP_ID != '' }}
         uses: actions/create-github-app-token@v2
         id: app-token
         with:
@@ -232,7 +249,7 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v6
         with:
-          token: ${{ steps.app-token.outputs.token }}
+          token: ${{ steps.app-token.outputs.token || secrets.GITHUB_TOKEN }}
           submodules: ${{ inputs.submodules }}
 
       - name: Build and push container

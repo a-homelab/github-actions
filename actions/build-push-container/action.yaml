@@ -88,16 +88,24 @@ inputs:
     required: false
 
   release-bot-github-app-id:
-    description: Release bot Github App ID
+    description: |
+      Optional release bot Github App ID. Supply it only when the build must
+      reach private repos the caller's GITHUB_TOKEN cannot see. When unset,
+      `github-token` is used for the `github_token` build secret instead.
     required: false
 
   release-bot-github-app-private-key:
-    description: Release bot Github App private key
+    description: Optional release bot Github App private key. See `release-bot-github-app-id`.
     required: false
 
   github-token:
-    description: Github token for ghcr
-    required: true
+    description: |
+      Token used to authenticate to ghcr and, absent a release-bot App, as the
+      `github_token` build secret. Defaults to the calling workflow's
+      GITHUB_TOKEN, which can push to packages under its own org given
+      `packages: write`.
+    default: ${{ github.token }}
+    required: false
 
 outputs:
   registry:
