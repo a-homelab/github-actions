@@ -7,11 +7,21 @@ on:
         description: Canonical service name. Must be unique across all services.
         required: true
         type: string
-      
+
       registries:
         description: |
-          JSON-formated list of registries to use. Valid values are: `ecr`,`ghcr`. Defaults to `["ecr"]`.
-        default: '["ecr"]'
+          JSON-formated list of registries to use. Valid values are: `ecr`,`ghcr`. Defaults to `["ghcr"]`.
+        default: '["ghcr"]'
+        required: false
+        type: string
+
+      image-namespace:
+        description: |
+          Namespace inserted between the registry host and the service name,
+          e.g. `a-homelab` yields `ghcr.io/a-homelab/<service-name>`. When
+          unset, defaults to the owner of the repository running the workflow.
+          Pass `/` to push directly under the registry root.
+        default: ""
         required: false
         type: string
 
@@ -44,6 +54,19 @@ on:
         required: false
         type: string
 
+      push:
+        description: |
+          Whether to push the built image. Set to `false` to validate the
+          Dockerfile (build-only). When `false`, the digest export, digest
+          artifact upload, and the manifest-merge job are skipped. The
+          Trivy scan still runs against the locally-loaded image.
+
+          Use single-platform input (`platforms: '["linux/amd64"]'`) for
+          validation runs to avoid wasted multi-platform builds.
+        default: true
+        required: false
+        type: boolean
+
       tag-latest:
         description: Whether to tag and push latest
         default: true
@@ -63,15 +86,21 @@ on:
 
       # https://docs.docker.com/engine/reference/commandline/buildx_build/#cache-from
       cache-from:
-        description: Whether to enable lfs or not
+        description: Cache from
         required: false
         type: string
 
       # https://docs.docker.com/engine/reference/commandline/buildx_build/#cache-to
       cache-to:
-        description: Whether to enable lfs or not
+        description: Cache to
         required: false
         type: string
+
+      enable-cache-mounts:
+        description: Persist BuildKit RUN --mount=type=cache mounts across builds. Disabled by default due to slow post-build tar operations.
+        default: false
+        required: false
+        type: boolean
 
       allow-fail:
         description: Wether to allow the workflow to continue if the job fails
@@ -93,7 +122,7 @@ on:
 
       runs-on-linux-arm64:
         description: Runner tag to run this workflow on for linux/arm64
-        default: ubuntu-latest-arm64
+        default: ubuntu-24.04-arm
         required: false
         type: string
 
@@ -108,7 +137,7 @@ on:
         description: Full image name with SHA
         value: ${{ jobs.build-push.outputs.image-with-sha }}
       repository:
-        description: ECR repository
+        description: Container repository
         value: ${{ jobs.build-push.outputs.repository }}
       digest:
         description: Image digest
@@ -117,16 +146,17 @@ on:
         description: Full image ref with digest
         value: ${{ jobs.build-push.outputs.image-ref }}
 
-# Permissions for Github OIDC -> AWS
+# Permissions for Github OIDC -> AWS, and for pushing packages to ghcr.
 # https://docs.github.com/en/actions/security-for-github-actions/security-hardening-your-deployments/configuring-openid-connect-in-amazon-web-services#adding-permissions-settings
 permissions:
   id-token: write
   contents: read
+  packages: write
 
 jobs:
   compute-tags:
     name: Compute image tags
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runs-on }}
     outputs:
       images: ${{ steps.compute-tags.outputs.images }}
       tags: ${{ steps.compute-tags.outputs.tags }}
@@ -137,42 +167,13 @@ jobs:
         with:
           service-name: ${{ inputs.service-name }}
           registries: ${{ inputs.registries }}
+          image-namespace: ${{ inputs.image-namespace }}
           tag-latest: ${{ inputs.tag-latest }}
           tags: ${{ inputs.tags }}
-  
-  compute-include:
-    name: Compute include for matrix
-    runs-on: ubuntu-latest
-    outputs:
-      include: ${{ steps.compute-include.outputs.include }}
-    steps:
-      - name: Compute included
-        id: compute-include
-        run: |-
-          tee matrix-config.json <<EOF
-            {
-              "matrixPlatforms": ${MATRIX_PLATFORMS},
-              "include": [
-                {
-                  "platform": "linux/amd64",
-                  "runner": "${{ inputs.runs-on-linux-amd64 }}"
-                },
-                {
-                  "platform": "linux/arm64",
-                  "runner": "${{ inputs.runs-on-linux-arm64 }}"
-                }
-              ]
-            }
-            
-          EOF
-          cat matrix-config.json
-          echo "include="$(cat matrix-config.json | jq -rc '[ .matrixPlatforms as $platforms_list | .include[] | select(.platform as $platform | $platforms_list | index($platform)) ]')"" >> "${GITHUB_OUTPUT}"
-        env:
-          MATRIX_PLATFORMS: ${{ inputs.platforms }}
-  
+
   generate-artifacts-suffix:
     name: Generate unique suffix for artifacts within the matrix run
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runs-on }}
     outputs:
       suffix: ${{ steps.generate-suffix.outputs.suffix }}
     steps:
@@ -185,15 +186,33 @@ jobs:
     name: Docker Build and Push ${{ inputs.service-name }} ${{ matrix.platform }}
     needs:
       - compute-tags
-      - compute-include
       - generate-artifacts-suffix
-    runs-on: ${{ matrix.runner }}
+    runs-on: ${{ matrix.runs-on }}
     continue-on-error: ${{ inputs.allow-fail }}
+    # Pair each requested platform with its native runner without a separate
+    # matrix-computation job: expand the full platform x runner cross product,
+    # then exclude every mismatched pair plus any platform the caller did not
+    # ask for.
     strategy:
       fail-fast: false
       matrix:
         platform: ${{ fromJson(inputs.platforms) }}
-        include: ${{ fromJson(needs.compute-include.outputs.include) }}
+        runs-on:
+          - ${{ inputs.runs-on-linux-amd64 }}
+          - ${{ inputs.runs-on-linux-arm64 }}
+        isAmd64:
+          - ${{ contains(fromJson(inputs.platforms), 'linux/amd64') }}
+        isArm64:
+          - ${{ contains(fromJson(inputs.platforms), 'linux/arm64') }}
+        exclude:
+          - isAmd64: false
+            platform: linux/amd64
+          - isArm64: false
+            platform: linux/arm64
+          - platform: linux/amd64
+            runs-on: ${{ inputs.runs-on-linux-arm64 }}
+          - platform: linux/arm64
+            runs-on: ${{ inputs.runs-on-linux-amd64 }}
     outputs:
       registry: ${{ steps.build-push.outputs.registry }}
       short-sha: ${{ steps.build-push.outputs.short-sha }}
@@ -203,7 +222,7 @@ jobs:
       image-ref: ${{ steps.build-push.outputs.image-ref }}
     steps:
       - name: Create Github App token
-        uses: actions/create-github-app-token@v1
+        uses: actions/create-github-app-token@v2
         id: app-token
         with:
           app-id: ${{ secrets.RELEASE_BOT_APP_ID }}
@@ -211,7 +230,7 @@ jobs:
           owner: ${{ github.repository_owner }}
 
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           token: ${{ steps.app-token.outputs.token }}
           submodules: ${{ inputs.submodules }}
@@ -222,15 +241,18 @@ jobs:
         with:
           service-name: ${{ inputs.service-name }}
           registries: ${{ inputs.registries }}
+          image-namespace: ${{ inputs.image-namespace }}
           context: ${{ inputs.context }}
           file: ${{ inputs.file }}
           build-args: ${{ inputs.build-args }}
           target: ${{ inputs.target }}
           platforms: ${{ matrix.platform }}
+          push: ${{ inputs.push }}
           tag-latest: ${{ inputs.tag-latest }}
           tags: ${{ needs.compute-tags.outputs.tags }}
           digest-only: ${{ strategy.job-total > 1 && 'true' || 'false' }}
           artifacts-suffix: ${{ needs.generate-artifacts-suffix.outputs.suffix }}
+          enable-cache-mounts: ${{ inputs.enable-cache-mounts }}
           cache-from: ${{ inputs.cache-from }}
           cache-to: ${{ inputs.cache-to }}
           release-bot-github-app-id: ${{ secrets.RELEASE_BOT_APP_ID }}
@@ -239,7 +261,10 @@ jobs:
 
   merge:
     name: Merge image manifests ${{ inputs.service-name }}
-    runs-on: ubuntu-latest
+    # Validation runs (push=false) don't push platform images, so there's
+    # nothing to assemble into a manifest list.
+    if: ${{ inputs.push }}
+    runs-on: ${{ inputs.runs-on }}
     continue-on-error: ${{ inputs.allow-fail }}
     needs:
       - compute-tags
@@ -247,28 +272,28 @@ jobs:
       - build-push
     steps:
       - name: Download digests
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v5
         with:
           path: /tmp/digests
           pattern: 'digests-*-${{ needs.generate-artifacts-suffix.outputs.suffix }}'
           merge-multiple: true
-      
+
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-      
+        uses: docker/setup-buildx-action@v4
+
       - name: Login to ECR
         if: contains(fromJson(inputs.registries), 'ecr')
         id: login-ecr
         uses: a-homelab/github-actions/actions/login-ecr@main
-      
+
       - name: Log in to ghcr
         if: contains(fromJson(inputs.registries), 'ghcr')
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      
+
       - name: Create manifest list and push
         working-directory: /tmp/digests
         run: |
@@ -283,13 +308,14 @@ jobs:
             tags_args+=("${tag}")
           done <<< "${TAGS}"
 
-          echo "command: docker buildx imagetools create ${tags_args[@]} $(printf '${{ needs.build-push.outputs.repository }}@sha256:%s ' *)"
+          echo "command: docker buildx imagetools create ${tags_args[@]} $(printf "${REPOSITORY}@sha256:%s " *)"
 
           docker buildx imagetools create ${tags_args[@]} \
-            $(printf '${{ needs.build-push.outputs.repository }}@sha256:%s ' *)
+            $(printf "${REPOSITORY}@sha256:%s " *)
         env:
           TAGS: ${{ needs.compute-tags.outputs.tags }}
-      
+          REPOSITORY: ${{ needs.build-push.outputs.repository }}
+
       - name: Inspect image
         run: |
           while IFS= read -r tag
@@ -299,6 +325,23 @@ jobs:
               continue
             fi
             docker buildx imagetools inspect "${tag}"
+          done <<< "${TAGS}"
+        env:
+          TAGS: ${{ needs.compute-tags.outputs.tags }}
+
+      - name: Write job summary
+        run: |
+          echo "## Container Images Pushed" >> "${GITHUB_STEP_SUMMARY}"
+          echo "" >> "${GITHUB_STEP_SUMMARY}"
+          echo "| Image |" >> "${GITHUB_STEP_SUMMARY}"
+          echo "| ----- |" >> "${GITHUB_STEP_SUMMARY}"
+          while IFS= read -r tag
+          do
+            if [[ "${tag}" == '' ]]
+            then
+              continue
+            fi
+            echo "| \`${tag}\` |" >> "${GITHUB_STEP_SUMMARY}"
           done <<< "${TAGS}"
         env:
           TAGS: ${{ needs.compute-tags.outputs.tags }}

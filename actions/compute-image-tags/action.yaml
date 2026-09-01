@@ -8,10 +8,19 @@ inputs:
 
   registries:
     description: |
-      Registries to use. Valid values are: `ecr`,`ghcr`. Defaults to `["ecr"]`.
-    default: '["ecr"]'
+      Registries to use. Valid values are: `ecr`,`ghcr`. Defaults to `["ghcr"]`.
+    default: '["ghcr"]'
     required: false
-  
+
+  image-namespace:
+    description: |
+      Namespace inserted between the registry host and the service name,
+      e.g. `a-homelab` yields `ghcr.io/a-homelab/<service-name>`. When
+      unset, defaults to the owner of the repository running the workflow.
+      Pass `/` to push directly under the registry root.
+    default: ""
+    required: false
+
   tag-latest:
     description: Whether to tag and push latest
     default: "true"
@@ -21,11 +30,11 @@ inputs:
     description: Custom tags for the image
     required: false
 
-outputs:  
+outputs:
   images:
     description: Image names
     value: ${{ steps.custom-tags.outputs.images }}
-  
+
   tags:
     description: Image tags
     value: ${{ steps.custom-tags.outputs.tags }}
@@ -33,7 +42,11 @@ outputs:
 runs:
   using: composite
   steps:
+    # Only assume the AWS role when ECR is actually one of the targets.
+    # Without this guard a ghcr-only build still tries to federate into
+    # AWS and fails on repos that have no ECR access.
     - name: Login to ECR
+      if: contains(fromJson(inputs.registries), 'ecr')
       id: login-ecr
       uses: a-homelab/github-actions/actions/login-ecr@main
 
@@ -45,22 +58,28 @@ runs:
       id: canonicalize-github-ref
       shell: bash
       run: echo "github-ref-docker-tag=$(echo "${GITHUB_REF_NAME}" | sed 's/[^a-zA-Z0-9]/-/g')" >> "${GITHUB_OUTPUT}"
-    
+
     - name: Compute custom tags
       id: custom-tags
       shell: bash
       run: |
         declare -a images=()
+        # Unset means "use the repo owner"; a literal "/" means "no namespace
+        # at all". ghcr also rejects uppercase in the image path, and the owner
+        # login that feeds the default is frequently mixed case.
+        namespace="${IMAGE_NAMESPACE:-${GITHUB_REPOSITORY_OWNER}}"
+        [[ "${namespace}" == '/' ]] && namespace=''
+        namespace="${namespace,,}"
         readarray -t registries < <(echo "${REGISTRIES}" | jq -rc '.[]')
         for registry in "${registries[@]}"
         do
           # Compute image name from registry
           if [[ "${registry}" == 'ecr' ]]
           then
-            images+=("${ECR_REGISTRY}/a-homelab/${SERVICE_NAME}")
+            images+=("${ECR_REGISTRY}${namespace:+/${namespace}}/${SERVICE_NAME}")
           elif [[ "${registry}" == 'ghcr' ]]
           then
-            images+=("ghcr.io/a-homelab/${SERVICE_NAME}")
+            images+=("ghcr.io${namespace:+/${namespace}}/${SERVICE_NAME}")
           else
             echo "Invalid registry: ${registry}"
             continue
@@ -104,14 +123,19 @@ runs:
 
           for image in "${images[@]}"
           do
-            # echo "${image}:${GITHUB_REF_DOCKER_TAG}" >> "${GITHUB_OUTPUT}"
             echo "${image}:${GITHUB_REF_DOCKER_TAG}-${SHORT_SHA}" >> "${GITHUB_OUTPUT}"
+            echo "${image}:${SHORT_SHA}" >> "${GITHUB_OUTPUT}"
+
+            # Add PR tags
+            if [[ "${IS_PR}" == 'true' ]]
+            then
+              echo "${image}:pr-${PR_NUMBER}-${SHORT_SHA}" >> "${GITHUB_OUTPUT}"
+            fi
 
             # Additional tags for canonical "latest"
             if [[ "${TAG_LATEST}" == 'true' ]]
             then
               echo "${image}:latest" >> "${GITHUB_OUTPUT}"
-              echo "${image}:${SHORT_SHA}" >> "${GITHUB_OUTPUT}"
             fi
           done
 
@@ -122,6 +146,9 @@ runs:
         TAGS: ${{ inputs.tags }}
         TAG_LATEST: ${{ inputs.tag-latest }}
         ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        IMAGE_NAMESPACE: ${{ inputs.image-namespace }}
         SERVICE_NAME: ${{ inputs.service-name }}
         GITHUB_REF_DOCKER_TAG: ${{ steps.canonicalize-github-ref.outputs.github-ref-docker-tag }}
         SHORT_SHA: ${{ steps.short-sha.outputs.short-sha }}
+        IS_PR: ${{ github.event_name == 'pull_request' }}
+        PR_NUMBER: ${{ github.event_name == 'pull_request' && github.event.pull_request.number || '' }}

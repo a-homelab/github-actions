@@ -8,15 +8,24 @@ inputs:
 
   registries:
     description: |
-      Registries to use. Valid values are: `ecr`,`ghcr`. Defaults to `["ecr"]`.
-    default: '["ecr"]'
+      Registries to use. Valid values are: `ecr`,`ghcr`. Defaults to `["ghcr"]`.
+    default: '["ghcr"]'
+    required: false
+
+  image-namespace:
+    description: |
+      Namespace inserted between the registry host and the service name,
+      e.g. `a-homelab` yields `ghcr.io/a-homelab/<service-name>`. When
+      unset, defaults to the owner of the repository running the workflow.
+      Pass `/` to push directly under the registry root.
+    default: ""
     required: false
 
   context:
     description: Build context
     default: "."
     required: false
-  
+
   file:
     description: Path to Dockerfile
     default: "./Dockerfile"
@@ -25,7 +34,7 @@ inputs:
   build-args:
     description: List of Docker build args
     required: false
-  
+
   target:
     description: Target stage
     required: false
@@ -34,7 +43,17 @@ inputs:
     description: List of target platforms
     default: linux/amd64
     required: false
-  
+
+  push:
+    description: Whether to push the built image. Set to "false" to
+      validate the Dockerfile (build-only). When false, the digest
+      export, digest artifact upload, and the manifest-merge job in
+      the calling workflow are skipped. Trivy still scans the image,
+      since the just-built image is loaded into the runner's Docker
+      engine and scanned by image ID.
+    default: "true"
+    required: false
+
   tag-latest:
     description: Whether to tag and push latest
     default: "true"
@@ -52,24 +71,29 @@ inputs:
   artifacts-suffix:
     description: Additional suffix to add to the generated digest artifacts. The full suffix will be `digests-<PLATFORM>-<SUFFIX>`.
     required: true
-  
+
   # https://docs.docker.com/engine/reference/commandline/buildx_build/#cache-from
   cache-from:
-    description: Whether to enable lfs or not
+    description: Cache from
     required: false
-  
+
   # https://docs.docker.com/engine/reference/commandline/buildx_build/#cache-to
   cache-to:
-    description: Whether to enable lfs or not
+    description: Cache to
     required: false
-  
+
+  enable-cache-mounts:
+    description: Persist BuildKit RUN --mount=type=cache mounts across builds. Disabled by default due to slow post-build tar operations.
+    default: "false"
+    required: false
+
   release-bot-github-app-id:
     description: Release bot Github App ID
-    required: true
+    required: false
 
   release-bot-github-app-private-key:
     description: Release bot Github App private key
-    required: true
+    required: false
 
   github-token:
     description: Github token for ghcr
@@ -78,7 +102,11 @@ inputs:
 outputs:
   registry:
     description: Container registry
-    value: ${{ steps.login-ecr.outputs.registry }}
+    value: ${{ steps.image-name.outputs.registry }}
+
+  repository:
+    description: Container repository
+    value: ${{ steps.image-name.outputs.repository }}
 
   short-sha:
     description: Computed short SHA for the current commit
@@ -86,47 +114,49 @@ outputs:
 
   image-with-sha:
     description: Full container image with SHA tag
-    value: ${{ steps.login-ecr.outputs.registry }}/a-homelab/${{ inputs.service-name }}:${{ steps.canonicalize-github-ref.outputs.github-ref-docker-tag }}-${{ steps.short-sha.outputs.short-sha }}
-  
-  repository:
-    description: Container repository
-    value: ${{ steps.login-ecr.outputs.registry }}/a-homelab/${{ inputs.service-name }}
+    value: ${{ steps.image-name.outputs.repository }}:${{ steps.canonicalize-github-ref.outputs.github-ref-docker-tag }}-${{ steps.short-sha.outputs.short-sha }}
 
   digest:
     description: Image digest
     value: ${{ steps.build-push.outputs.digest }}
-  
+
   image-ref:
     description: Full image ref with digest
-    value: ${{ steps.login-ecr.outputs.registry }}/a-homelab/${{ inputs.service-name }}@${{ steps.build-push.outputs.digest }}
+    value: ${{ steps.image-name.outputs.repository }}@${{ steps.build-push.outputs.digest }}
 
 runs:
   using: composite
   steps:
     - name: Create Github App token
-      uses: actions/create-github-app-token@v1
+      if: inputs.release-bot-github-app-id != ''
+      uses: actions/create-github-app-token@v2
       id: app-token
       with:
         app-id: ${{ inputs.release-bot-github-app-id }}
         private-key: ${{ inputs.release-bot-github-app-private-key }}
         owner: ${{ github.repository_owner }}
-    
+
     - name: Prepare
       shell: bash
       run: |
-        platform=${{ inputs.platforms }}
-        platform_pair="${platform//\//-}" >> "${GITHUB_ENV}"
+        platform="${PLATFORM}"
+        platform_pair="${platform//\//-}"
         echo "DIGEST_ARTIFACT_NAME=digests-${platform_pair}-${DIGEST_ARTIFACTS_SUFFIX}" >> "${GITHUB_ENV}"
       env:
+        PLATFORM: ${{ inputs.platforms }}
         DIGEST_ARTIFACTS_SUFFIX: ${{ inputs.artifacts-suffix }}
 
+    # Only assume the AWS role when ECR is actually one of the targets.
+    # Without this guard a ghcr-only build still tries to federate into
+    # AWS and fails on repos that have no ECR access.
     - name: Login to ECR
+      if: contains(fromJson(inputs.registries), 'ecr')
       id: login-ecr
       uses: a-homelab/github-actions/actions/login-ecr@main
-    
+
     - name: Log in to ghcr
       if: contains(fromJson(inputs.registries), 'ghcr')
-      uses: docker/login-action@v3
+      uses: docker/login-action@v4
       with:
         registry: ghcr.io
         username: ${{ github.actor }}
@@ -139,6 +169,34 @@ runs:
         echo 'TRIVY_USERNAME=${{ github.actor }}' >> "${GITHUB_ENV}"
         echo 'TRIVY_PASSWORD=${{ inputs.github-token }}' >> "${GITHUB_ENV}"
 
+    # The digest-only push target and every image-name output resolve to a
+    # single canonical repository. ECR wins when it is in the registry list
+    # (the multi-registry tags still fan out via compute-image-tags); ghcr
+    # is the fallback so a ghcr-only build never references an empty ECR
+    # registry.
+    - name: Compute canonical image name
+      id: image-name
+      shell: bash
+      run: |
+        if [[ -n "${ECR_REGISTRY}" ]]
+        then
+          registry="${ECR_REGISTRY}"
+        else
+          registry='ghcr.io'
+        fi
+        # Unset means "use the repo owner"; a literal "/" means "no namespace
+        # at all". ghcr also rejects uppercase in the image path, and the owner
+        # login that feeds the default is frequently mixed case.
+        namespace="${IMAGE_NAMESPACE:-${GITHUB_REPOSITORY_OWNER}}"
+        [[ "${namespace}" == '/' ]] && namespace=''
+        namespace="${namespace,,}"
+        echo "registry=${registry}" >> "${GITHUB_OUTPUT}"
+        echo "repository=${registry}${namespace:+/${namespace}}/${SERVICE_NAME}" >> "${GITHUB_OUTPUT}"
+      env:
+        ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        IMAGE_NAMESPACE: ${{ inputs.image-namespace }}
+        SERVICE_NAME: ${{ inputs.service-name }}
+
     - name: Compute short SHA
       id: short-sha
       uses: a-homelab/github-actions/actions/short-sha@main
@@ -149,10 +207,31 @@ runs:
       run: echo "github-ref-docker-tag=$(echo "${GITHUB_REF_NAME}" | sed 's/[^a-zA-Z0-9]/-/g')" >> "${GITHUB_OUTPUT}"
 
     - name: Set up Docker Buildx
-      uses: docker/setup-buildx-action@v3
+      id: setup-buildx
+      uses: docker/setup-buildx-action@v4
+
+    - name: Set up build cache
+      if: inputs.enable-cache-mounts == 'true'
+      uses: actions/cache@v4
+      with:
+        path: |
+          /tmp/buildx-cache
+          /tmp/buildkit-cache-dance
+        key: buildx-${{ inputs.service-name }}-${{ inputs.platforms }}-${{ github.sha }}
+        restore-keys: |
+          buildx-${{ inputs.service-name }}-${{ inputs.platforms }}-
+
+    - name: Inject BuildKit cache mounts
+      if: inputs.enable-cache-mounts == 'true'
+      uses: reproducible-containers/buildkit-cache-dance@v3
+      with:
+        cache-dir: /tmp/buildkit-cache-dance
+        scratch-dir: /tmp/buildkit-cache-dance/.scratch
+        dockerfile: ${{ inputs.file }}
+        builder: ${{ steps.setup-buildx.outputs.name }}
 
     - name: Build and push ${{ inputs.service-name }}
-      uses: docker/build-push-action@v6
+      uses: docker/build-push-action@v7
       id: build-push
       continue-on-error: false
       with:
@@ -161,39 +240,106 @@ runs:
         build-args: ${{ inputs.build-args }}
         target: ${{ inputs.target }}
         secrets: |
-          github_token=${{ steps.app-token.outputs.token }}
+          github_token=${{ steps.app-token.outputs.token || inputs.github-token }}
         platforms: ${{ inputs.platforms }}
-        push: true
+        # `--push` (type=registry) only fires for non-digest-only mode.
+        # Pairing it with the digest-only `outputs:` below would run two
+        # parallel push paths and drag every entry in `--tag` through the
+        # registry exporter, which fails on local-only refs.
+        push: ${{ inputs.push == 'true' && inputs.digest-only != 'true' }}
+        # Always load so the Trivy scan below can run against the
+        # just-built image without a registry round-trip. Each matrix run
+        # is single-platform, so this is always valid.
+        load: true
         tags: ${{ inputs.digest-only == 'false' && inputs.tags || '' }}
-        outputs: ${{ inputs.digest-only == 'true' && format('type=image,name={0}/a-homelab/{1},push-by-digest=true,name-canonical=true,push=true', steps.login-ecr.outputs.registry, inputs.service-name) || '' }}
-        cache-from: ${{ inputs.cache-from }}
-        cache-to: ${{ inputs.cache-to }}
+        # Digest-only push for multi-platform matrix runs; the merge job
+        # consumes the per-platform digests to assemble the manifest list.
+        outputs: ${{ inputs.push == 'true' && inputs.digest-only == 'true' && format('type=image,name={0},push-by-digest=true,name-canonical=true,push=true', steps.image-name.outputs.repository) || '' }}
+        cache-from: |
+          ${{ inputs.enable-cache-mounts == 'true' && 'type=local,src=/tmp/buildx-cache' || '' }}
+          ${{ inputs.cache-from }}
+        cache-to: |
+          ${{ inputs.enable-cache-mounts == 'true' && 'type=local,dest=/tmp/buildx-cache,mode=max' || '' }}
+          ${{ inputs.cache-to }}
 
+    # Digest export + upload only matter when we pushed. The calling workflow's
+    # `merge` job consumes these artifacts to assemble the multi-arch manifest;
+    # validation builds (push=false) skip merge, so producing artifacts here
+    # would also be wasted work.
     - name: Export digest
+      if: ${{ inputs.push == 'true' }}
       shell: bash
       run: |
         mkdir -p /tmp/digests
-        digest="${{ steps.build-push.outputs.digest }}"
-        touch "/tmp/digests/${digest#sha256:}"          
-    
+        digest="${DIGEST}"
+        touch "/tmp/digests/${digest#sha256:}"
+      env:
+        DIGEST: ${{ steps.build-push.outputs.digest }}
+
     # Produces an artifact with with following structure:
     # Artifact name: `digests-<PLATFORM>-<ADDITIONAL_SUFFIX>` where platform is the input Docker platform with slashes replaced with dashes (e.g. `digests-linux-amd64`)
     # Artifact file names: the digest sha256 sum without the `sha256:` prefix
     - name: Upload digest
+      if: ${{ inputs.push == 'true' }}
       uses: actions/upload-artifact@v4
       with:
         name: ${{ env.DIGEST_ARTIFACT_NAME }}
         path: /tmp/digests/*
         if-no-files-found: error
         retention-days: 1
-    
+
+    - name: Write job summary
+      shell: bash
+      run: |
+        echo "## Container Image Build - \`${SERVICE_NAME}\` (\`${PLATFORM}\`)" >> "${GITHUB_STEP_SUMMARY}"
+        echo "" >> "${GITHUB_STEP_SUMMARY}"
+        echo "| Field | Value |" >> "${GITHUB_STEP_SUMMARY}"
+        echo "| ----- | ----- |" >> "${GITHUB_STEP_SUMMARY}"
+        echo "| **Image** | \`${REPOSITORY}\` |" >> "${GITHUB_STEP_SUMMARY}"
+        echo "| **Digest** | \`${DIGEST}\` |" >> "${GITHUB_STEP_SUMMARY}"
+        echo "| **Platform** | \`${PLATFORM}\` |" >> "${GITHUB_STEP_SUMMARY}"
+      env:
+        SERVICE_NAME: ${{ inputs.service-name }}
+        PLATFORM: ${{ inputs.platforms }}
+        REPOSITORY: ${{ steps.image-name.outputs.repository }}
+        DIGEST: ${{ steps.build-push.outputs.digest }}
+
+    # Scan the locally-loaded image by imageid, which works identically for
+    # pushed and validation-only builds and needs no registry round-trip.
     - name: Scan image
-      uses: aquasecurity/trivy-action@0.20.0
+      uses: aquasecurity/trivy-action@0.35.0
       with:
         scan-type: image
-        image-ref: ${{ steps.login-ecr.outputs.registry }}/a-homelab/${{ inputs.service-name }}@${{ steps.build-push.outputs.digest }}
+        image-ref: ${{ steps.build-push.outputs.imageid }}
         format: table
+        output: trivy-results.txt
       env:
         # See: https://github.com/aquasecurity/trivy-action/issues/389
-        TRIVY_DB_REPOSITORY: public.ecr.aws/aquasecurity/trivy-db:2
+        TRIVY_DB_REPOSITORY: mirror.gcr.io/aquasec/trivy-db:2,public.ecr.aws/aquasecurity/trivy-db:2,ghcr.io/aquasecurity/trivy-db:2
+        TRIVY_JAVA_DB_REPOSITORY: mirror.gcr.io/aquasec/trivy-java-db:1,public.ecr.aws/aquasecurity/trivy-java-db:1,ghcr.io/aquasecurity/trivy-java-db:1
         TRIVY_PLATFORM: ${{ inputs.platforms }}
+
+    - name: Write Trivy results to job summary
+      if: ${{ always() }}
+      shell: bash
+      run: |
+        if [[ -s trivy-results.txt ]]; then
+          cat trivy-results.txt
+        fi
+        {
+          echo "## Trivy Scan - \`${SERVICE_NAME}\`"
+          echo ""
+          if [[ -s trivy-results.txt ]]; then
+            echo '<details><summary>Scan results</summary>'
+            echo ''
+            echo '```'
+            cat trivy-results.txt
+            echo '```'
+            echo ''
+            echo '</details>'
+          else
+            echo 'No vulnerabilities found.'
+          fi
+        } >> "${GITHUB_STEP_SUMMARY}"
+      env:
+        SERVICE_NAME: ${{ inputs.service-name }}
