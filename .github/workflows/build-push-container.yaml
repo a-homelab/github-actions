@@ -232,13 +232,16 @@ jobs:
       repository: ${{ steps.build-push.outputs.repository }}
       digest: ${{ steps.build-push.outputs.digest }}
       image-ref: ${{ steps.build-push.outputs.image-ref }}
+    env:
+      # secrets.* is not available in a step-level if:, so hoist the test here.
+      HAS_APP_TOKEN: ${{ secrets.RELEASE_BOT_APP_ID != '' }}
     steps:
       # Optional. A release-bot App token is only needed to reach private
       # repos the caller's GITHUB_TOKEN cannot see (private submodules, or a
       # Dockerfile that clones a sibling repo via the github_token secret).
       # Callers that pass no App secrets fall back to GITHUB_TOKEN below.
       - name: Create Github App token
-        if: ${{ secrets.RELEASE_BOT_APP_ID != '' }}
+        if: env.HAS_APP_TOKEN == 'true'
         uses: actions/create-github-app-token@v2
         id: app-token
         with:
